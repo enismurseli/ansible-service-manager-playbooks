@@ -1,0 +1,99 @@
+---
+- name: Service restart
+  hosts: "{{ target_name }}"
+  gather_facts: no
+  serial: 1
+  vars_files:
+    - ./vars/map_data.yml
+  tasks:
+    - name: Set facts
+      set_fact:
+        wapp_sync: "{{ wapp_sync | default('no') }}"
+        show_details_callback: true
+        send_mail_callback: true
+        mail_to: "{{ requester_mail | default([])}}"
+    - name:
+      block:
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: 'Stop service {{service_map[service_map_key]["service_name"]}}'
+          win_command: powershell.exe -command "Stop-Service {{service_map[service_map_key]['service_name']}}"
+          register: stop_result
+          when: '"Running" in status_result.stdout_lines'
+          poll: 10
+          async: 300
+
+        - name: "Wait"
+          pause: seconds=60
+
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: 'Fail if the service is not stopped'
+          fail:
+            msg: "Service did not stopped as expected"
+          when: '"Running" in status_result.stdout_lines and status_result.stdout_lines is defined '
+
+        - name: 'Start service {{service_map[service_map_key]["service_name"]}}'
+          win_command: powershell.exe -command "Start-Service {{service_map[service_map_key]['service_name']}}"
+          register: stop_result
+          when: '"Stopped" in status_result.stdout_lines'
+          poll: 10
+          async: 300
+
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: "Fail if the service is not started"
+          fail:
+            msg: "Service did not started as expected!"
+          when: '("Stopped" in status_result.stdout_lines) or ("StopPending" in status_result.stdout_lines)'
+
+      rescue:
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: 'Get process id'
+          win_shell: Get-WmiObject -Class Win32_Service -Filter "Name LIKE '{{service_map[service_map_key]["service_name"]}}'" | Select-Object -ExpandProperty ProcessId
+          register: process_id
+
+        - name: 'Kill service {{service_map[service_map_key]["service_name"]}} widh pid {{process_id.stdout_lines[0]}}'
+          win_command: powershell.exe -command "taskkill /f /pid {{process_id.stdout_lines[0]}}"
+#          win_command: powershell.exe -command "Stop-Service -Force {{service_map[service_map_key]['service_name']}}"
+          register: stop_result
+          when: '(("Running" in status_result.stdout_lines) or ("StopPending" in status_result.stdout_lines)) and (process_id.stdout_lines | length >0 )'
+          poll: 10
+          async: 300
+
+        - name: "Wait"
+          pause: seconds=300
+
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: 'Fail if the service is not stopped'
+          fail:
+            msg: "Service did not stopped as expected"
+          when: '"Running" in status_result.stdout_lines'
+
+        - name: 'Start service {{service_map[service_map_key]["service_name"]}}'
+          win_command: powershell.exe -command "Start-Service {{service_map[service_map_key]['service_name']}}"
+          register: stop_result
+          when: '"Stopped" in status_result.stdout_lines'
+          poll: 10
+          async: 300
+
+        - name: 'Get service status {{service_map[service_map_key]["service_name"]}}'
+          win_shell: '(Get-Service {{service_map[service_map_key]["service_name"]}}).Status'
+          register: status_result
+
+        - name: "Fail if the service is not started"
+          fail:
+            msg: "Service did not started as expected!"
+          when: '"Stopped" in status_result.stdout_lines'

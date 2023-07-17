@@ -1,0 +1,131 @@
+---
+- name: Test service restart
+  hosts: "{{ target_name }}"
+  gather_facts: no
+  tasks:
+    - name: Set facts
+      set_fact: 
+        string1: 'ps -ef |grep -w karaf|grep -w "/app/{{process_filter}}/container" | grep -v ansible | grep -v grep '
+        string2: "| awk '{print $2}'"
+ 
+    - name: "Stop service {{ service_name }}  "
+      block:
+        - name: "Stop service {{ service_name }}, wait for the service to stop"
+          become: yes
+          become_user: devopsits
+          become_method: sudo
+          shell: sh -c "sudo /usr/sbin/service {{ service_name }} stop"
+          async: 120
+          poll: 10
+          register: stop_result
+
+        - name: Stop result
+          debug:
+            var: stop_result
+
+        - name: Check if any process is running
+          shell: "{{string1}}{{string2}}"
+          register: running_processes
+
+        - name: Running processes (PIDs)
+          debug:
+            var: running_processes
+
+        - name: Number of PIDs
+          debug:
+            msg: "{{ running_processes['stdout_lines'] | length }}"
+
+        - name: Fail if service is not stopped as expected (number of PIDs >=1)
+          fail:
+            msg: 'The service was not stopped as expected. There are multiple processes running'
+          when: running_processes["stdout_lines"] | length >=1
+      rescue:
+        - name: Kill running processes using kill command and signal -15 (SIGTERM)
+          become: yes
+          become_user: devopsits
+          become_method: sudo
+          shell: sh -c "sudo -u {{ process_filter }} /usr/bin/kill -15 {{ item }}"
+          with_items: "{{ running_processes.stdout_lines }}"
+          register: kill_result
+          async: 120
+          poll: 10
+
+        - name: Kill result
+          debug:
+            var: kill_result
+
+        - name: Wait for status
+          wait_for:
+            path: "/proc/{{ item }}/status"
+            state: absent
+          with_items: "{{ running_processes.stdout_lines }}"
+          ignore_errors: yes
+          async: 120
+          poll: 10
+          register: killed_processes
+
+        - name: Result from kill command
+          debug:
+            var: killed_processes
+
+        - name: Force kill stuck processes using signal -9 (SIGKILL)
+          become: yes
+          become_user: devopsits
+          become_method: sudo
+          shell: sh -c "sudo -u {{ process_filter }} /usr/bin/kill -9 {{ item }}"
+          with_items: "{{ killed_processes.results | select('failed') | map(attribute='item') | list }}"
+          register: force_kill_result
+          async: 120
+          poll: 10
+
+        - name: Result from force kill command
+          debug:
+            var: force_kill_result
+
+        - name: Check if any process is running
+          shell: "{{string1}}{{string2}}"
+          register: running_processes
+
+        - name: Running processes (PIDs)
+          debug:
+            var: running_processes
+
+        - name: Number of PIDs
+          debug:
+            msg: "{{ running_processes['stdout_lines'] | length }}"
+
+        - name: Fail if there is a running process (number of PIDs >=1)
+          fail:
+            msg: 'Kill and kill -9 finished without success'
+          when: running_processes["stdout_lines"] | length >=1
+
+    - name: "Start service {{ service_name }}"
+      become: yes
+      become_user: devopsits
+      become_method: sudo
+      shell: sh -c "sudo /usr/sbin/service {{ service_name }} start"
+      async: 120
+      poll: 10
+      register: start_result
+
+    - name: Start result
+      debug:
+        var: start_result
+
+    - name: Check if any process is running
+      shell: "{{string1}}{{string2}}"
+      register: running_processes
+
+    - name: Running processes (PIDs)
+      debug:
+        var: running_processes
+
+    - name: Number of PIDs
+      debug:
+        msg: "{{ running_processes['stdout_lines'] | length }}"
+
+    - name: Fail if service is not restarted as expected (number of PIDs !=1)
+      fail:
+        msg: 'The service was not started as expected. There is no or multiple processes running'
+      when: running_processes["stdout_lines"] | length !=1
+
